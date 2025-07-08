@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
@@ -39,7 +38,7 @@ if st.button("🔎 Run PubMed Search"):
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
         search_params = {
             "db": "pubmed",
-            "retmax": "50",
+            "retmax": "25",
             "retmode": "json",
             "term": query
         }
@@ -53,10 +52,15 @@ if st.button("🔎 Run PubMed Search"):
                 "id": pmid,
                 "retmode": "xml"
             }
-            response = requests.get(efetch_url, params=params)
-            root = ET.fromstring(response.content)
-            article = root.find(".//PubmedArticle")
-            return article
+            try:
+                response = requests.get(efetch_url, params=params, timeout=10)
+                if response.status_code != 200 or not response.content:
+                    return None
+                root = ET.fromstring(response.content)
+                article = root.find(".//PubmedArticle")
+                return article
+            except Exception:
+                return None
 
         def score_article(article):
             score = 0
@@ -99,19 +103,22 @@ if st.button("🔎 Run PubMed Search"):
             article = fetch_article(pmid)
             if article is None:
                 continue
-            title = article.findtext(".//ArticleTitle", "")
-            link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-            journal = article.findtext(".//Journal/Title", "")
-            date = article.findtext(".//PubDate/Year") or article.findtext(".//PubDate/MedlineDate") or "N/A"
-            score, reason = score_article(article)
-            records.append({
-                "Title": title,
-                "Link": link,
-                "Journal": journal,
-                "Date": date,
-                "Score": score,
-                "Why": reason
-            })
+            try:
+                title = article.findtext(".//ArticleTitle", "")
+                link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                journal = article.findtext(".//Journal/Title", "")
+                date = article.findtext(".//PubDate/Year") or article.findtext(".//PubDate/MedlineDate") or "N/A"
+                score, reason = score_article(article)
+                records.append({
+                    "Title": title,
+                    "Link": link,
+                    "Journal": journal,
+                    "Date": date,
+                    "Score": score,
+                    "Why": reason
+                })
+            except Exception:
+                continue
 
         df = pd.DataFrame(records).sort_values("Score", ascending=False)
 

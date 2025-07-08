@@ -38,7 +38,7 @@ if st.button("🔎 Run PubMed Search"):
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
         search_params = {
             "db": "pubmed",
-            "retmax": "25",
+            "retmax": "250",
             "retmode": "json",
             "term": query
         }

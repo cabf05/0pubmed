@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 import pandas as pd
-import datetime
 
 st.set_page_config(page_title="PubMed Relevance Ranker", layout="wide")
 
@@ -29,6 +28,8 @@ default_institutions = "\n".join([
 inst_input = st.text_area("Renowned Institutions (one per line)", value=default_institutions, height=150)
 institutions = [i.strip().lower() for i in inst_input.strip().split("\n") if i.strip()]
 
+max_results = st.number_input("Max number of articles to fetch", min_value=10, max_value=1000, value=250, step=10)
+
 hot_keywords = ["glp-1", "semaglutide", "tirzepatide", "ai", "machine learning", "telemedicine"]
 
 if st.button("🔎 Run PubMed Search"):
@@ -38,29 +39,25 @@ if st.button("🔎 Run PubMed Search"):
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
         search_params = {
             "db": "pubmed",
-            "retmax": "250",
+            "retmax": str(max_results),
             "retmode": "json",
             "term": query
         }
         r = requests.get(search_url, params=search_params)
         id_list = r.json()["esearchresult"].get("idlist", [])
 
-        def fetch_article(pmid):
-            efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-            params = {
-                "db": "pubmed",
-                "id": pmid,
-                "retmode": "xml"
-            }
-            try:
-                response = requests.get(efetch_url, params=params, timeout=10)
-                if response.status_code != 200 or not response.content:
-                    return None
-                root = ET.fromstring(response.content)
-                article = root.find(".//PubmedArticle")
-                return article
-            except Exception:
-                return None
+        # Step 2: Use efetch in batch
+        efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        params = {
+            "db": "pubmed",
+            "id": ",".join(id_list),
+            "retmode": "xml"
+        }
+        response = requests.get(efetch_url, params=params, timeout=20)
+
+        parsed_ok = 0
+        parsed_fail = 0
+        records = []
 
         def score_article(article):
             score = 0
@@ -98,32 +95,38 @@ if st.button("🔎 Run PubMed Search"):
 
             return score, "; ".join(reasons)
 
-        records = []
-        for pmid in id_list:
-            article = fetch_article(pmid)
-            if article is None:
-                continue
-            try:
-                title = article.findtext(".//ArticleTitle", "")
-                link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-                journal = article.findtext(".//Journal/Title", "")
-                date = article.findtext(".//PubDate/Year") or article.findtext(".//PubDate/MedlineDate") or "N/A"
-                score, reason = score_article(article)
-                records.append({
-                    "Title": title,
-                    "Link": link,
-                    "Journal": journal,
-                    "Date": date,
-                    "Score": score,
-                    "Why": reason
-                })
-            except Exception:
-                continue
+        try:
+            root = ET.fromstring(response.content)
+            articles = root.findall(".//PubmedArticle")
+            for article in articles:
+                try:
+                    pmid = article.findtext(".//PMID")
+                    title = article.findtext(".//ArticleTitle", "")
+                    link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                    journal = article.findtext(".//Journal/Title", "")
+                    date = article.findtext(".//PubDate/Year") or article.findtext(".//PubDate/MedlineDate") or "N/A"
+                    score, reason = score_article(article)
+                    records.append({
+                        "Title": title,
+                        "Link": link,
+                        "Journal": journal,
+                        "Date": date,
+                        "Score": score,
+                        "Why": reason
+                    })
+                    parsed_ok += 1
+                except Exception:
+                    parsed_fail += 1
+        except Exception:
+            st.error("Failed to parse XML from PubMed.")
 
         df = pd.DataFrame(records).sort_values("Score", ascending=False)
 
-        st.success(f"Found {len(df)} articles.")
-        st.dataframe(df[["Title", "Journal", "Date", "Score", "Why"]], use_container_width=True)
+        st.success(f"Found {len(id_list)} PMIDs. Successfully parsed {parsed_ok} articles. Failed to parse {parsed_fail}.")
 
-        csv = df.to_csv(index=False)
-        st.download_button("⬇️ Download CSV", data=csv, file_name="ranked_pubmed_results.csv", mime="text/csv")
+        if not df.empty:
+            st.dataframe(df[["Title", "Journal", "Date", "Score", "Why"]], use_container_width=True)
+            csv = df.to_csv(index=False)
+            st.download_button("⬇️ Download CSV", data=csv, file_name="ranked_pubmed_results.csv", mime="text/csv")
+        else:
+            st.warning("No valid articles found to display.")
